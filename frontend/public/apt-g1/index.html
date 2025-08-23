@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>APT Haritası</title>
+    <style>
+        body { margin: 0; background: #000; }
+        #container { width: 100vw; height: 100vh; }
+        #error { color: red; position: absolute; top: 10px; left: 10px; font-family: Arial; }
+        #search { position: absolute; top: 10px; right: 10px; color: white; }
+        #search input { padding: 5px; }
+    </style>
+    <script src="./three.min.js"></script>
+    <script src="./globe.js"></script>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="error"></div>
+    <div id="search">
+        <label for="locationSearch">Ülke:</label>
+        <input type="text" id="locationSearch" placeholder="Örn: China">
+    </div>
+
+    <script>
+        async function initGlobe() {
+            const errorDiv = document.getElementById('error');
+            try {
+                // WebGL destek kontrolü
+                if (!window.WebGLRenderingContext || !document.createElement('canvas').getContext('webgl')) {
+                    throw new Error('Tarayıcınız WebGL desteklemiyor.');
+                }
+
+                // Ülke centroid'larını yükle
+                const centroidsResponse = await fetch('./countries.geojson');
+                if (!centroidsResponse.ok) throw new Error('Ülke koordinatları yüklenemedi: ./countries.geojson');
+                const centroidsData = await centroidsResponse.json();
+                const countryMap = {};
+                centroidsData.features.forEach(feature => {
+                    const countryName = feature.properties.NAME || feature.properties.COUNTRY;
+                    if (countryName) {
+                        const [lng, lat] = feature.geometry.coordinates;
+                        countryMap[countryName.toLowerCase()] = { lat, lng };
+                    }
+                });
+                console.log('Ülkeler yüklendi:', Object.keys(countryMap));
+
+                // APT verisini yükle
+                const aptResponse = await fetch('./apt.json');
+                if (!aptResponse.ok) throw new Error('APT verisi yüklenemedi: ./apt.json');
+                const aptData = await aptResponse.json();
+                console.log('APT verisi yüklendi:', aptData);
+
+                // Globe oluştur
+                const container = document.getElementById('container');
+                const globe = new DAT.Globe(container, {
+                    imgDir: './earth.jpg', // earth.jpg'nin yeri
+                    radius: 200 // Globe boyutunu artır
+                });
+
+                // Texture yükleme kontrolü
+                const texture = new THREE.TextureLoader().load('./earth.jpg', () => {
+                    console.log('Texture yüklendi');
+                    globe.globeMaterial.map = texture;
+                    globe.globeMaterial.needsUpdate = true;
+                }, undefined, (error) => {
+                    console.error('Texture yüklenemedi:', error);
+                    errorDiv.textContent = 'Hata: earth.jpg yüklenemedi. Dosyayı kontrol edin.';
+                });
+
+                // Points verisini hazırla
+                let points = [];
+                const pointInfo = [];
+                aptData.forEach(item => {
+                    const countryKey = item.country ? item.country.toLowerCase() : null;
+                    const coords = countryMap[countryKey];
+                    if (!coords) {
+                        console.warn(`Ülke bulunamadı: ${item.country}`);
+                        return;
+                    }
+                    const jitter = 2;
+                    const lat = coords.lat + (Math.random() - 0.5) * jitter;
+                    const lng = coords.lng + (Math.random() - 0.5) * jitter;
+                    points.push(lat, lng, 1); // magnitude = 1
+                    pointInfo.push({ name: item.name, url: item.url, description: item.description || 'Açıklama yok', threat_type: item.threat_type });
+                });
+                console.log('Noktalar hazırlandı:', points.length / 3);
+
+                // Renkli noktalar için colorFn
+                globe.addData(points, {
+                    format: 'magnitude',
+                    name: 'APT Groups',
+                    colorFn: (index) => {
+                        const dataIndex = Math.floor(index / 3); // Her nokta 3 değer (lat, lng, mag)
+                        const threat = pointInfo[dataIndex].threat_type;
+                        switch (threat) {
+                            case 'Espionage': return 'blue';
+                            case 'State-Sponsored': return 'green';
+                            case 'Financial Crime': return 'yellow';
+                            default: return 'red'; // Varsayılan renk
+                        }
+                    }
+                });
+                globe.createPoints();
+                globe.animate();
+
+                // Arama filtresi
+                document.getElementById('locationSearch').addEventListener('input', (e) => {
+                    const filter = e.target.value.toLowerCase();
+                    const filteredData = filter ? aptData.filter(item => item.country.toLowerCase().includes(filter)) : aptData;
+                    points = [];
+                    pointInfo.length = 0;
+                    filteredData.forEach(item => {
+                        const countryKey = item.country.toLowerCase();
+                        const coords = countryMap[countryKey];
+                        if (!coords) return;
+                        const jitter = 2;
+                        const lat = coords.lat + (Math.random() - 0.5) * jitter;
+                        const lng = coords.lng + (Math.random() - 0.5) * jitter;
+                        points.push(lat, lng, 1);
+                        pointInfo.push({ name: item.name, url: item.url, description: item.description || 'Açıklama yok', threat_type: item.threat_type });
+                    });
+                    globe.scene.remove(globe.points);
+                    globe.points = new THREE.Object3D();
+                    globe.scene.add(globe.points);
+                    globe.addData(points, {
+                        format: 'magnitude',
+                        name: 'APT Groups',
+                        colorFn: (index) => {
+                            const dataIndex = Math.floor(index / 3);
+                            const threat = pointInfo[dataIndex].threat_type;
+                            switch (threat) {
+                                case 'Espionage': return 'blue';
+                                case 'State-Sponsored': return 'green';
+                                case 'Financial Crime': return 'yellow';
+                                default: return 'red';
+                            }
+                        }
+                    });
+                    globe.createPoints();
+                    globe.animate();
+                });
+
+                // Tıklama eventi
+                const raycaster = new THREE.Raycaster();
+                const mouse = new THREE.Vector2();
+                container.addEventListener('click', (event) => {
+                    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+                    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+                    raycaster.setFromCamera(mouse, globe.camera);
+                    const intersects = raycaster.intersectObjects(globe.points.children);
+                    if (intersects.length > 0) {
+                        const index = Math.floor(intersects[0].index / 3);
+                        if (pointInfo[index]) {
+                            window.open(pointInfo[index].url, '_blank');
+                        }
+                    }
+                });
+
+                errorDiv.textContent = 'Harita yüklendi!';
+            } catch (error) {
+                console.error('Hata:', error);
+                errorDiv.textContent = `Hata: ${error.message}`;
+            }
+        }
+
+        // Başlat
+        initGlobe();
+    </script>
+</body>
+</html>
