@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = 'http://localhost:8000'; // Backend'in çalıştığı URL
+const API_BASE_URL = 'http://127.0.0.1:8000'; // Backend'in çalıştığı URL
 
 export const getGroups = async () => {
   const response = await axios.get(`${API_BASE_URL}/groups`);
@@ -12,7 +12,7 @@ export const getCampaigns = async () => {
   return response.data;
 };
 
-export const getTimeline = async (params: Record<string, string | number | undefined>) => {
+export const getTimeline = async (params: Record<string, string | number | boolean | undefined>) => {
   const response = await axios.get(`${API_BASE_URL}/timeline`, { params });
   return response.data;
 };

@@ -42,20 +42,25 @@ const Timeline: React.FC = () => {
     fromDate: '',
     toDate: '',
     limit: 500,
-    sort: 'date_asc'
+    sort: 'date_asc',
+    includeUnknownGroups: true
   });
 
   const fetchTimelineData = async () => {
     try {
       setLoading(true);
       const timelineData = await getTimeline(filters);
-      setData(timelineData || []);
+      const events = Array.isArray(timelineData) ? timelineData : [];
+      const filtered = filters.includeUnknownGroups
+        ? events
+        : events.filter((ev: any) => ev.group_name !== 'Unknown' && ev.country !== 'Unknown');
+      setData(filtered);
       
       // Extract unique groups from data for filter dropdown
       const uniqueGroups = Array.from(
-        new Set(timelineData?.map((event: TimelineEvent) => 
+        new Set(events.map((event: TimelineEvent) => 
           JSON.stringify({ name: event.group_name, country: event.country || 'Unknown' })
-        ) || [])
+        ))
       ).map((groupStr) => JSON.parse(groupStr as string) as Group);
       
       setGroups(uniqueGroups);
@@ -190,7 +195,7 @@ const Timeline: React.FC = () => {
   const uniqueYears = getUniqueYears();
 
   return (
-    <div className="timeline-container">
+    <div className="timeline-container w-full h-full">
       <Filters 
         filters={filters}
         groups={groups}

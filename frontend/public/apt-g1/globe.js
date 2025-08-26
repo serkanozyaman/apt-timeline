@@ -22,6 +22,8 @@ DAT.Globe = function(container, opts) {
     return c;
   };
   var imgDir = opts.imgDir || '/apt-g1/';
+  // allow customizing point size multiplier via options
+  var pointMultiplier = (typeof opts.pointMultiplier !== 'undefined') ? opts.pointMultiplier : 200;
 
   var Shaders = {
     'earth' : {
@@ -205,8 +207,9 @@ DAT.Globe = function(container, opts) {
       lat = data[i];
       lng = data[i + 1];
       color = colorFnWrapper(data,i);
-      size = data[i + 2];
-      size = size*200;
+  size = data[i + 2];
+  // apply configurable multiplier so callers can control visible point size
+  size = size * pointMultiplier;
       addPoint(lat, lng, size, color, subgeo);
     }
     if (opts.animated) {
@@ -256,7 +259,8 @@ DAT.Globe = function(container, opts) {
 
     point.lookAt(mesh.position);
 
-    point.scale.z = Math.max( size, 0.1 ); // avoid non-invertible matrix
+  // Ensure a sensible minimum scale for visibility
+  point.scale.z = Math.max( size, 0.5 ); // avoid non-invertible matrix and keep points visible
     point.updateMatrix();
 
     for (var i = 0; i < point.geometry.faces.length; i++) {

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { MapPin, Search } from 'lucide-react';
 import { getTimeline, getGroups } from '../services/apiService';
+import iso2ToName from '../data/iso2_to_name.json';
 
 declare global {
   interface Window {
@@ -19,50 +20,22 @@ const WorldMap: React.FC = () => {
   const [countryStats, setCountryStats] = useState<{[key: string]: number}>({});
   const [filteredCountries, setFilteredCountries] = useState<string[]>([]);
 
-  // Arama filtresi
+  // Single effect: load scripts, fetch API data, then init globe
+  const unmatchedSet = new Set<string>();
+  const matchedSet = new Set<string>();
+
+  // Search functionality
   useEffect(() => {
-    if (searchQuery.trim()) {
-      const filtered = Object.keys(countryStats).filter(country =>
-        country.toLowerCase().includes(searchQuery.toLowerCase())
-      );
-      setFilteredCountries(filtered);
-    } else {
+    if (searchQuery.trim() === '') {
       setFilteredCountries([]);
+      return;
     }
+    
+    const filtered = Object.keys(countryStats).filter(country =>
+      country.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+    setFilteredCountries(filtered);
   }, [searchQuery, countryStats]);
-
-  // API'den veri çekme
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [timelineResponse, groupsResponse] = await Promise.all([
-          getTimeline({ limit: 1000 }),
-          getGroups()
-        ]);
-        
-        setTimelineData(timelineResponse || []);
-        setGroupsData(groupsResponse || []);
-        
-        // Ülke istatistiklerini hesapla - API response formatına göre
-        const countryCount: {[key: string]: number} = {};
-        const events = Array.isArray(timelineResponse) ? timelineResponse : [];
-        
-        events.forEach((event: any) => {
-          // Backend'den gelen country field'ını kullan
-          if (event.country && event.country !== 'Unknown') {
-            countryCount[event.country] = (countryCount[event.country] || 0) + 1;
-          }
-        });
-        setCountryStats(countryCount);
-        
-      } catch (err) {
-        console.error('Error fetching API data:', err);
-        setError('Failed to load data from API');
-      }
-    };
-
-    fetchData();
-  }, []);
 
   useEffect(() => {
     const loadScriptsAndInitGlobe = async () => {
@@ -73,7 +46,7 @@ const WorldMap: React.FC = () => {
           threeScript.src = '/apt-g1/three.min.js';
           threeScript.async = true;
           document.head.appendChild(threeScript);
-          
+
           await new Promise((resolve, reject) => {
             threeScript.onload = resolve;
             threeScript.onerror = reject;
@@ -86,15 +59,44 @@ const WorldMap: React.FC = () => {
           globeScript.src = '/apt-g1/globe.js';
           globeScript.async = true;
           document.head.appendChild(globeScript);
-          
+
           await new Promise((resolve, reject) => {
             globeScript.onload = resolve;
             globeScript.onerror = reject;
           });
         }
 
-        // Initialize globe
-        await initGlobe();
+        // Fetch timeline + groups from backend BEFORE initializing globe so points reflect latest data
+        const [timelineResponse, groupsResponse] = await Promise.all([
+          getTimeline({ limit: 2000 }),
+          getGroups()
+        ]);
+
+        const events = Array.isArray(timelineResponse) ? timelineResponse : [];
+        setTimelineData(events);
+        setGroupsData(Array.isArray(groupsResponse) ? groupsResponse : []);
+
+        // Build country stats map
+        const countryCount: {[key: string]: number} = {};
+        events.forEach((event: any) => {
+          if (event.country && event.country !== 'Unknown') {
+            countryCount[event.country] = (countryCount[event.country] || 0) + 1;
+          }
+        });
+        setCountryStats(countryCount);
+
+        console.log('WorldMap: Raw events sample:', events.slice(0, 3));
+        console.log('WorldMap: Country stats built:', countryCount);
+
+        console.log('WorldMap: Fetched data:', {
+          timelineEvents: events.length,
+          groups: Array.isArray(groupsResponse) ? groupsResponse.length : 0,
+          countryStats: countryCount,
+          sampleEvent: events[0]
+        });
+
+        // Initialize globe after data ready
+        await initGlobe(events, countryCount);
         setIsLoading(false);
       } catch (err) {
         console.error('Error loading globe:', err);
@@ -106,7 +108,7 @@ const WorldMap: React.FC = () => {
     loadScriptsAndInitGlobe();
   }, []);
 
-  const initGlobe = async () => {
+  const initGlobe = async (events: any[], countryStats: {[key: string]: number}) => {
     if (!containerRef.current || !window.THREE || !window.DAT) return;
 
     try {
@@ -122,41 +124,290 @@ const WorldMap: React.FC = () => {
       const countryMap: { [key: string]: { lat: number; lng: number } } = {};
       
       centroidsData.features.forEach((feature: any) => {
-        const countryName = feature.properties.NAME || feature.properties.COUNTRY;
-        if (countryName) {
-          const [lng, lat] = feature.geometry.coordinates;
-          countryMap[countryName.toLowerCase()] = { lat, lng };
+        const props = feature.properties || {};
+        const candidates: string[] = [];
+        [
+          props.NAME,           // Primary country name
+          props.NAME_EN,        // English name
+          props.ADMIN,          // Administrative name
+          props.SOVEREIGNT,     // Sovereign name
+          props.NAME_LONG,      // Long name
+          props.FORMAL_EN,      // Formal English name
+        ].forEach((v) => { if (v) candidates.push(String(v)); });
+        [
+          props.ISO_A2,         // ISO 2-letter code
+          props.ISO_A3,         // ISO 3-letter code
+          props.ISO2,           // Alternative ISO2
+          props.ISO3,           // Alternative ISO3
+        ].forEach((v) => { if (v) candidates.push(String(v)); });
+
+        const geom = feature.geometry || {};
+        let coords: number[] | undefined = undefined;
+        
+        // Try to extract coordinates from different geometry types
+        if (geom.type === 'Point' && Array.isArray(geom.coordinates)) {
+          coords = geom.coordinates as number[];
+        } else if (geom.type === 'MultiPoint' && Array.isArray(geom.coordinates) && geom.coordinates.length) {
+          coords = geom.coordinates[0];
+        } else if (geom.type === 'Polygon' && Array.isArray(geom.coordinates) && geom.coordinates.length > 0) {
+          // For polygons, calculate centroid from the first ring
+          const ring = geom.coordinates[0];
+          if (ring && ring.length > 0) {
+            let sumLng = 0, sumLat = 0;
+            ring.forEach((coord: number[]) => {
+              sumLng += coord[0];
+              sumLat += coord[1];
+            });
+            coords = [sumLng / ring.length, sumLat / ring.length];
+          }
+        } else if (geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates) && geom.coordinates.length > 0) {
+          // For multipolygons, use the first polygon's centroid
+          const firstPoly = geom.coordinates[0];
+          if (firstPoly && firstPoly.length > 0) {
+            const ring = firstPoly[0];
+            if (ring && ring.length > 0) {
+              let sumLng = 0, sumLat = 0;
+              ring.forEach((coord: number[]) => {
+                sumLng += coord[0];
+                sumLat += coord[1];
+              });
+              coords = [sumLng / ring.length, sumLat / ring.length];
+            }
+          }
         }
+
+        if (!coords || coords.length < 2) {
+          console.warn('WorldMap: Could not extract coordinates from geometry:', geom.type, geom.coordinates);
+          return;
+        }
+        
+        const [lng, lat] = coords;
+        
+        // Validate coordinates
+        if (isNaN(lng) || isNaN(lat) || lng < -180 || lng > 180 || lat < -90 || lat > 90) {
+          console.warn('WorldMap: Invalid coordinates:', lng, lat, 'for feature:', props.NAME);
+          return;
+        }
+
+        candidates.forEach((key) => {
+          const k = String(key).trim().toLowerCase();
+          if (!k) return;
+          
+          // Store the coordinates for this country identifier
+          countryMap[k] = { lat: Number(lat), lng: Number(lng) };
+          
+          // Also store common variations
+          if (k.includes('united states')) {
+            countryMap['usa'] = { lat: Number(lat), lng: Number(lng) };
+            countryMap['us'] = { lat: Number(lat), lng: Number(lng) };
+          }
+          if (k.includes('united kingdom')) {
+            countryMap['uk'] = { lat: Number(lat), lng: Number(lng) };
+            countryMap['gb'] = { lat: Number(lat), lng: Number(lng) };
+          }
+          if (k.includes('russia')) {
+            countryMap['russian federation'] = { lat: Number(lat), lng: Number(lng) };
+          }
+        });
       });
 
-      // Load APT data from API instead of static file
-      const data: number[] = [];
-      
-      // API'den gelen timeline verilerini kullan
-      if (Object.keys(countryStats).length > 0) {
-        Object.entries(countryStats).forEach(([country, count]) => {
-          const countryInfo = countryMap[country.toLowerCase()];
-          if (countryInfo && count > 0) {
-            // Aktivite sayısına göre büyüklük belirle (0.2 - 1.0 arası)
-            const magnitude = Math.min(0.2 + (count / 10) * 0.8, 1.0);
-            data.push(countryInfo.lat, countryInfo.lng, magnitude);
+              console.log('WorldMap: Loaded country map with', Object.keys(countryMap).length, 'countries');
+        console.log('WorldMap: Sample countries in map:', Object.keys(countryMap).slice(0, 10));
+        
+        // Debug: Check if specific countries are in the map
+        const debugCountries = ['china', 'russia', 'pakistan', 'iran', 'north korea', 'turkey'];
+        debugCountries.forEach(country => {
+          if (countryMap[country]) {
+            console.log('WorldMap: Found', country, 'at', countryMap[country]);
+          } else {
+            console.warn('WorldMap: Missing', country, 'in countryMap');
           }
+        });
+
+      // API'den gelen timeline verilerini kullan
+      const data: number[] = [];
+
+      if (events.length === 0 && Object.keys(countryStats).length > 0) {
+        // fallback to aggregated countryStats
+        console.log('WorldMap: Using aggregated country stats as fallback');
+        Object.entries(countryStats).forEach(([country, count]) => {
+          const countryInfo = countryMap[(country || '').toLowerCase()];
+          if (countryInfo && count > 0) {
+            // scale up magnitude so points appear much larger on the globe
+            const baseMag = 0.2 + (count / 10) * 0.8;
+            const magnitude = Math.min(baseMag * 4.0, 4.0);
+            data.push(countryInfo.lat, countryInfo.lng, magnitude);
+            console.log('WorldMap: Added point for', country, 'at', countryInfo.lat, countryInfo.lng, 'magnitude', magnitude);
+          } else {
+            console.warn('WorldMap: Could not find coordinates for country:', country);
+            unmatchedSet.add(country);
+          }
+        });
+      } else {
+        console.log('WorldMap: Processing', events.length, 'timeline events');
+        const counts: {[key: string]: number} = {};
+        events.forEach((ev: any) => {
+          // Backend'den gelen TimelineEvent formatına uygun olarak country field'ını kullan
+          const c = ev.country || '';
+          if (c && c !== 'Unknown') counts[c] = (counts[c] || 0) + 1;
+        });
+
+        const findCountry = (raw: string | undefined) => {
+          if (!raw) return undefined;
+          const r = String(raw).trim();
+          if (!r) return undefined;
+          
+          console.log('WorldMap: Finding country for:', raw);
+          
+          // First, try to map ISO code to country name
+          if (/^[a-z]{2}$/i.test(r)) {
+            const mapped = (iso2ToName as any)[r.toUpperCase()];
+            if (mapped) {
+              console.log('WorldMap: Mapped ISO code', r, 'to country name', mapped);
+              // Now try to find the mapped country name in the countryMap
+              const countryInfo = countryMap[mapped.toLowerCase()];
+              if (countryInfo) {
+                console.log('WorldMap: Found coordinates for', mapped, ':', countryInfo);
+                matchedSet.add(raw);
+                return countryInfo;
+              } else {
+                console.warn('WorldMap: Mapped country name', mapped, 'not found in countryMap');
+              }
+            } else {
+              console.warn('WorldMap: ISO code', r, 'not found in iso2ToName mapping');
+            }
+          }
+          
+          // Direct match with country name
+          const low = r.toLowerCase();
+          if (countryMap[low]) {
+            console.log('WorldMap: Direct match found for', raw, ':', countryMap[low]);
+            matchedSet.add(raw);
+            return countryMap[low];
+          }
+          
+          // Try to find the country in the map with various search strategies
+          const countryKeys = Object.keys(countryMap);
+          let bestMatch = null;
+          let bestScore = 0;
+          
+          for (const key of countryKeys) {
+            let score = 0;
+            
+            // Exact substring match
+            if (key.includes(low) || low.includes(key)) {
+              score += 10;
+            }
+            
+            // Word boundary match
+            const keyWords = key.split(/\s+/);
+            const lowWords = low.split(/\s+/);
+            
+            for (const keyWord of keyWords) {
+              for (const lowWord of lowWords) {
+                if (keyWord === lowWord) {
+                  score += 5;
+                } else if (keyWord.startsWith(lowWord) || lowWord.startsWith(keyWord)) {
+                  score += 3;
+                }
+              }
+            }
+            
+            if (score > bestScore) {
+              bestScore = score;
+              bestMatch = key;
+            }
+          }
+          
+          if (bestMatch && bestScore >= 3) {
+            console.log('WorldMap: Best match found for', raw, ':', bestMatch, 'with score', bestScore);
+            matchedSet.add(raw);
+            return countryMap[bestMatch];
+          }
+          
+          // try iso variants
+          if (/^[a-z]{2}$/i.test(r) || /^[a-z]{3}$/i.test(r)) {
+            if (countryMap[r.toUpperCase().toLowerCase()]) {
+              console.log('WorldMap: ISO variant match found for', raw, ':', countryMap[r.toUpperCase().toLowerCase()]);
+              matchedSet.add(raw);
+              return countryMap[r.toUpperCase().toLowerCase()];
+            }
+          }
+          
+          const normalized = low.replace(/[.,'"()]/g, '').replace(/ of | the /g, ' ').trim();
+          if (countryMap[normalized]) {
+            console.log('WorldMap: Normalized match found for', raw, ':', countryMap[normalized]);
+            matchedSet.add(raw);
+            return countryMap[normalized];
+          }
+          
+          // Remove old partial match logic since we have better search above
+          
+          console.warn('WorldMap: No match found for country:', raw);
+          unmatchedSet.add(raw);
+          return undefined;
+        };
+
+        events.forEach((ev: any) => {
+          // Backend'den gelen TimelineEvent formatına uygun olarak country field'ını kullan
+          const raw = ev.country;
+          if (!raw || raw === 'Unknown') return;
+          
+          const countryInfo = findCountry(raw);
+          if (!countryInfo) {
+            console.warn('WorldMap: Could not find coordinates for country:', raw);
+            return;
+          }
+          
+          const count = counts[raw] || 1;
+          // scale up magnitude so individual event points are larger
+          const baseMag = 0.2 + (count / 10) * 0.8;
+          const magnitude = Math.min(baseMag * 4.0, 4.0);
+          const jitter = () => (Math.random() - 0.5) * 0.8 * (1 / Math.sqrt(count));
+          const lat = countryInfo.lat + jitter();
+          const lng = countryInfo.lng + jitter();
+          data.push(lat, lng, magnitude);
+          console.log('WorldMap: Added point for', raw, 'at', lat, lng, 'magnitude', magnitude);
         });
       }
 
-      console.log('Globe data points:', data.length / 3, 'countries');
+      console.log('WorldMap: Globe data points:', data.length / 3, 'points');
+      console.log('WorldMap: data sample (first 9 values):', data.slice(0, 9));
+      console.log('WorldMap: Matched countries:', Array.from(matchedSet));
+      console.log('WorldMap: Unmatched countries:', Array.from(unmatchedSet));
+      
+      // If no data produced, add visible debug points so we can confirm globe rendering
+      if (data.length === 0) {
+        console.warn('WorldMap: no data produced for globe — adding debug sample points');
+        // format: lat, lng, magnitude
+        data.push(39.9042, 116.4074, 4.0); // Beijing
+        data.push(38.9072, -77.0369, 4.0); // Washington DC
+        data.push(51.5074, -0.1278, 4.0); // London
+      }
 
       // Create globe
       const globe = new window.DAT.Globe(containerRef.current, {
-        imgDir: '/apt-g1/'
+        imgDir: '/apt-g1/',
+        // use a conservative multiplier for now to avoid extreme scaling
+        pointMultiplier: 200
       });
       globe.animate();
+      // Use non-animated path so points render immediately
       globe.addData(data, { 
         format: 'magnitude', 
         name: 'APT Activities',
-        animated: true
+        animated: false
       });
       globe.createPoints();
+
+      // debug: inspect geometry and points to ensure data was added
+      try {
+        const baseGeo = (globe as any)._baseGeometry;
+        console.log('WorldMap: globe _baseGeometry vertices:', baseGeo ? baseGeo.vertices.length : 'undefined');
+        console.log('WorldMap: globe.points present?', !!(globe as any).points);
+      } catch (e) {
+        console.warn('WorldMap: error inspecting globe internals', e);
+      }
 
       console.log('Globe initialized successfully');
     } catch (err) {

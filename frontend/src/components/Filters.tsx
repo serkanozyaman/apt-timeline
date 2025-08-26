@@ -9,7 +9,6 @@ interface FiltersProps {
 
 const Filters: React.FC<FiltersProps> = ({ filters, groups, onFilterChange, onRefresh }) => {
   const [isExpanded, setIsExpanded] = useState(false);
-  const [showUnknownGroups, setShowUnknownGroups] = useState(false);
 
   const handleInputChange = (field: string, value: any) => {
     onFilterChange({ [field]: value });
@@ -35,10 +34,10 @@ const Filters: React.FC<FiltersProps> = ({ filters, groups, onFilterChange, onRe
   };
 
   const getFilteredGroups = () => {
-    if (showUnknownGroups) {
+    if (filters.includeUnknownGroups) {
       return groups;
     }
-    return groups.filter(group => group.name !== 'Unknown');
+    return groups.filter(group => group.name !== 'Unknown' && group.country !== 'Unknown');
   };
 
   const countries = getUniqueCountries();
@@ -152,15 +151,21 @@ const Filters: React.FC<FiltersProps> = ({ filters, groups, onFilterChange, onRe
           </div>
 
           <div className="filter-group">
-            <label className="filter-checkbox-label">
-              <input
-                type="checkbox"
-                className="filter-checkbox"
-                checked={showUnknownGroups}
-                onChange={(e) => setShowUnknownGroups(e.target.checked)}
+            <label className="filter-label" htmlFor="unknown-toggle">Include Unknown Groups</label>
+            <button
+              id="unknown-toggle"
+              type="button"
+              onClick={() => handleInputChange('includeUnknownGroups', !filters.includeUnknownGroups)}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 ${
+                filters.includeUnknownGroups ? 'bg-teal-500' : 'bg-gray-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform duration-200 ${
+                  filters.includeUnknownGroups ? 'translate-x-5' : 'translate-x-1'
+                }`}
               />
-              <span>Include Unknown Groups</span>
-            </label>
+            </button>
           </div>
 
           <div className="filter-actions">
